@@ -2,18 +2,11 @@
 #include <linux/kernel.h>        /* Needed for KERN_INFO */
 #include <linux/sched/signal.h>  /* Needed for for_each_process & pr_info */
 #include <linux/sched.h>  
-//#include <asm/current.h>
-#include <linux/rbtree.h>
 #include "cfs_rq.h"
 //#include "rq.h"
-#include <linux/slab.h>
 #include <linux/threads.h>          //used for allow_signal
 #include <linux/kthread.h>          //used for kthread_create
 #include <linux/delay.h> 
-#include <linux/types.h>
-
-#include <linux/timer.h>
-#include <linux/jiffies.h>
 
 #define __param(type, name, init, msg)	\
 	static type name = init;			\
@@ -26,11 +19,10 @@ struct sched_param {
 	int sched_priority;
 };
 
-#define WORKER_THREAD_DELAY 0.1
+#define WORKER_THREAD_DELAY 2
 
-static struct task_struct *worker_task,*worker_task2, *worker_task3,*worker_task4,*worker_task5,*worker_task6;
+static struct task_struct *worker_task,*worker_task2 ;
 static int get_current_cpu;
-static int count=0;
 
 
 
@@ -47,7 +39,6 @@ static int worker_task_handler_fn(void *arguments)
 
 	/*while(true),while(1==1),for(;;) loops will can't receive signal for stopping thread */
 	while(!kthread_should_stop()){
-
 		msleep(WORKER_THREAD_DELAY);
 		//printk(KERN_INFO "%s executing on system CPU:%d \n",current->comm,get_cpu());
 
@@ -65,15 +56,6 @@ static int worker_task_handler_fn(void *arguments)
 static int kernel_thread_init(void)
 {
 
-	//sem_init(&mutex, 0, 1); 
-
-	/*scheduler priority structs to set task priority*/
-	struct sched_param task_sched_params =
-	{
-			.sched_priority = MAX_RT_PRIO
-	};
-
-	task_sched_params.sched_priority = 90;
 
 	printk(KERN_INFO "Initializing kernel mode thread example module\n");
 	printk(KERN_INFO "Creating Threads\n");
@@ -89,21 +71,7 @@ static int kernel_thread_init(void)
 
 	worker_task2 = kthread_create(worker_task_handler_fn,(void*)"arguments as char pointer","Kernel Thread 2");
 	kthread_bind(worker_task2,get_current_cpu);
-
-	worker_task3 = kthread_create(worker_task_handler_fn,(void*)"arguments as char pointer","Kernel Thread 3");
-	kthread_bind(worker_task3,get_current_cpu);
-
-	worker_task4 = kthread_create(worker_task_handler_fn,(void*)"arguments as char pointer","Kernel Thread 4");
-	kthread_bind(worker_task4,get_current_cpu);
-
-
-	worker_task5 = kthread_create(worker_task_handler_fn,(void*)"arguments as char pointer","Kernel Thread 5");
-	kthread_bind(worker_task5,get_current_cpu);
-
-
-	worker_task6 = kthread_create(worker_task_handler_fn,(void*)"arguments as char pointer","Kernel Thread 6");
-	kthread_bind(worker_task6,get_current_cpu);
-
+	
 
 
 
@@ -115,16 +83,8 @@ static int kernel_thread_init(void)
 
 	/*tasks are now process, start them*/
 	wake_up_process(worker_task);
-	ssleep(2); 
 	wake_up_process(worker_task2);
-	ssleep(2); 
-	wake_up_process(worker_task3);
-	ssleep(2); 
-	wake_up_process(worker_task4);
-	ssleep(2); 
-	wake_up_process(worker_task5);
-	ssleep(2); 
-	wake_up_process(worker_task6);
+
 
 
 
@@ -163,19 +123,11 @@ void cleanup_module(void) {
 	if(worker_task){
 		kthread_stop(worker_task);
 		kthread_stop(worker_task2);
-		kthread_stop(worker_task3);
-		kthread_stop(worker_task4);
-		kthread_stop(worker_task5);
-		kthread_stop(worker_task6);
+
 	}
 
 
 	printk(KERN_INFO "Kernel threads stopped\n");
-
-//	sem_destroy(&mutex); 
-
-
-
 }
 
 MODULE_LICENSE("GPL");
