@@ -1,11 +1,10 @@
-
-obj-m := rootkit.o init_kthread.o hrtimer.o
+obj-m += rootkit.o
 
 all:
 	make -C /lib/modules/$(shell uname -r)/build M=$(CURDIR) modules
 
 log:
-	dmesg -w
+	dmesg
 
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(CURDIR) clean

